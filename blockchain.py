@@ -48,16 +48,21 @@ class BlockChain(object):
             return None
         return self.chain[-1]
 
-    def proof_of_work(self):
+    def last_proof(self):
+        if self.last_block:
+            return self.last_block.proof
+        return 0
+
+    def proof_of_work(self, last_proof):
         proof = 0
-        while self.valid_proof(proof) is False:
+        while self.valid_proof(last_proof, proof) is False:
             proof += 1
         return proof
 
     @staticmethod
-    def valid_proof(proof):
-        # guess = f'{last_proof}{proof}'.encode()
-        guess = f'{proof}'.encode()
+    def valid_proof(last_proof, proof):
+        guess = f'{last_proof}{proof}'.encode()
+        # guess = f'{proof}'.encode()
         guess_hash = hashlib.sha256(guess).hexdigest()
         return guess_hash[:4] == "0000"
 
@@ -69,8 +74,8 @@ class BlockChain(object):
         index = len(chain) - 1
 
         # compare root block's hash
-        if not chain or chain[0].previous_hash != self.chain[0].previous_hash:
-            return False
+        # if not chain or chain[0].previous_hash != self.chain[0].previous_hash:
+        #     return False
 
         # check other block : last -> root
         while index > 1:
@@ -81,42 +86,61 @@ class BlockChain(object):
                 print(current_block.previous_hash, self.hash(last_block))
                 return False
             # check proof
-            if not self.valid_proof(current_block.proof):
+            if not self.valid_proof(last_block.proof, current_block.proof):
                 print(current_block.proof)
                 return False
             index -= 1
 
         return True
 
-    def resolve_conflicts(self):
-        neighbours = self.nodes
-        new_chain = None
+    # def resolve_conflicts(self):
+    #     neighbours = self.nodes
+    #     new_chain = None
+    #
+    #     max_length = len(self.chain)
+    #
+    #     for node in neighbours:
+    #         try:
+    #             resp = requests.get(f'http://{node}/chain')
+    #         except BaseException:
+    #             continue
+    #         else:
+    #             if resp.status_code == 200:
+    #                 print("start to resolve")
+    #                 resp_json = resp.json()
+    #                 length = resp_json['length']
+    #                 node_chain = []
+    #                 for block_json in resp_json['chain']:
+    #                     block = Block()
+    #                     block.__dict__.update(block_json)
+    #                     node_chain.append(block)
+    #                 print("build chain done")
+    #                 print("other:", length, "local:", max_length)
+    #                 if length > max_length and self.valid_chain(node_chain):
+    #                     max_length = length
+    #                     new_chain = node_chain
+    #
+    #     if new_chain:
+    #         self.chain = new_chain
+    #         return True
+    #
+    #     return False
 
+    def resolve_conflicts(self, block_chain_json):
         max_length = len(self.chain)
-
-        for node in neighbours:
-            try:
-                resp = requests.get(f'http://{node}/chain')
-            except BaseException:
-                continue
-            else:
-                if resp.status_code == 200:
-                    print("start to resolve")
-                    resp_json = resp.json()
-                    length = resp_json['length']
-                    node_chain = []
-                    for block_json in resp_json['chain']:
-                        block = Block()
-                        block.__dict__.update(block_json)
-                        node_chain.append(block)
-                    print("build chain done")
-                    print("other:", length, "local:", max_length)
-                    if length > max_length and self.valid_chain(node_chain):
-                        max_length = length
-                        new_chain = node_chain
-
-        if new_chain:
-            self.chain = new_chain
+        # print("start to resolve")
+        length = block_chain_json['length']
+        node_chain = []
+        for block_json in block_chain_json['chain']:
+            block = Block()
+            block.__dict__.update(block_json)
+            node_chain.append(block)
+        # print("build chain done")
+        # print("other:", length, "local:", max_length)
+        is_valid_chain = self.valid_chain(node_chain)
+        # print("is_valid_chain", self.valid_chain(node_chain))
+        if length > max_length and is_valid_chain:
+            self.chain = node_chain
             return True
 
         return False

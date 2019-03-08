@@ -1,10 +1,16 @@
+import json
 import sys
 import time
 from uuid import uuid4
 
 from flask import Flask, jsonify, request
 
+import paho.mqtt.client as mqtt
+
 import util
+
+import _thread
+
 from blockchain import BlockChain
 
 app = Flask(__name__)
@@ -13,14 +19,27 @@ node_identifier = str(uuid4()).replace('-', '')
 
 block_chain = BlockChain()
 
+client = mqtt.Client()
+
 
 @app.route('/transaction/new', methods=['POST'])
 def new_transaction():
     values = request.get_json()
-    if not all(k in values for k in ['sender', 'recipient', 'amount']):
+    index = add_transaction(values)
+    if index < 0:
         return msg_resp('Missing values', 400)
-    index = block_chain.new_transaction(values['sender'], values['recipient'], values['amount'])
+    # pub transaction to other nodes
+    pub_msg(TOPIC_NEW_TRANSACTION, util.to_json(values))
+    # do response
     return msg_resp(f'Transaction will be added to Block {index}', 201)
+
+
+def add_transaction(values):
+    if not all(k in values for k in ['sender', 'recipient', 'amount']):
+        return -1
+    index = block_chain.new_transaction(values['sender'], values['recipient'], values['amount'])
+    # print('add transaction', values['sender'], values['recipient'], values['amount'])
+    return index
 
 
 @app.route('/chain', methods=['GET'])
@@ -37,25 +56,28 @@ def mine():
     # check the transactions if exist
     if not block_chain.current_transactions:
         return msg_resp('No transactions', 400)
-    last_block = block_chain.last_block
-    # # chan is empty, init a root block
-    # if not last_block:
-    #     # root block
-    #     block = block_chain.new_block(0, "root")
-    # create a new block
-    # else:
 
     # do work
-    proof = block_chain.proof_of_work()
+
+    proof = block_chain.proof_of_work(block_chain.last_proof())
 
     # get a reword
     block_chain.new_transaction("0", node_identifier, 1)
 
     # build a block
-    previous_hash = block_chain.hash(last_block)
+    previous_hash = block_chain.hash(block_chain.last_block)
 
     # add to chain
     block = block_chain.new_block(proof, previous_hash)
+
+    # add start
+    block_chain_json = {
+        'chain': block_chain.chain,
+        'length': len(block_chain.chain),
+    }
+    # pub msg to other nodes
+    pub_msg(TOPIC_RESOLVE, util.to_json(block_chain_json))
+    # add end
 
     resp = util.to_json(block)
     return json_resp(resp)
@@ -99,9 +121,51 @@ def json_resp(resp, code=200):
     return resp, code
 
 
+TOPIC_RESOLVE = "node/resolve/"
+TOPIC_NEW_TRANSACTION = "transaction/new/"
+
+
+def on_connect(client, userdata, flags, rc):
+    app.logger.info("Connected to mqtt broker")
+
+
+def register_node_mptt():
+    client.on_message = on_resolve_msg
+    client.on_connect = on_connect
+    client.connect("212.64.27.116", 1883, 60)
+    client.subscribe(TOPIC_RESOLVE + '+')
+    client.subscribe(TOPIC_NEW_TRANSACTION + '+')
+    client.loop_start()
+
+
+def on_resolve_msg(client, userdata, msg):
+    msg_topic = msg.topic.rsplit('/', 1)[0] + '/'
+    id = msg.topic.rsplit('/', 1)[1]
+    msg_payload = msg.payload.decode()
+    msg_json = json.loads(msg_payload)
+    # print("on_resolve_msg", id, msg_topic)
+    if not id or id == node_identifier:
+        return
+    if msg_topic == TOPIC_RESOLVE:
+        if block_chain.resolve_conflicts(msg_json):
+            message = 'Local chain has been replaced'
+        else:
+            message = 'Local chain is authoritative'
+        app.logger.info(message)
+    elif msg_topic == TOPIC_NEW_TRANSACTION:
+        add_transaction(msg_json)
+
+
+def pub_msg(topic, msg):
+    client.publish(topic + node_identifier, msg)
+
+
 def msg_resp(message, code=200):
     return jsonify({'message': message}), code
 
 
 if __name__ == '__main__':
-    app.run(host='localhost', port=5001)
+    # _thread.start_new_thread(register_node_mptt,())
+    register_node_mptt()
+    # _thread.start_new_thread(sent_msg,())
+    app.run(host='localhost', port=5000)
